@@ -4,13 +4,15 @@ import os
 import asyncio
 from datetime import datetime
 from astrbot.api.all import *
+# 显式导入 startup 装饰器，解决 NameError
+from astrbot.api.event_layout.star import on_startup 
 
 @register("dnf_personal_reminder", "yunko1993", "DNF私人提醒秘书", "1.2.0")
 class PersonalReminder(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         
-        # 数据存放于 AstrBot 根目录下的 data/plugin_data/dnf_personal_reminder/
+        # 数据存放路径
         self.plugin_name = "dnf_personal_reminder"
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         self.data_dir = os.path.join(base_dir, "data", "plugin_data", self.plugin_name)
@@ -39,11 +41,14 @@ class PersonalReminder(Star):
             logging.error(f"保存数据失败: {e}")
 
     def _refresh_scheduler(self):
+        """刷新定时任务列表"""
         scheduler = self.context.get_scheduler()
+        # 移除旧任务
         for job in scheduler.get_jobs():
             if job.id.startswith(f"{self.plugin_name}_"):
                 scheduler.remove_job(job.id)
 
+        # 重新注册任务
         for idx, item in enumerate(self.reminders):
             try:
                 h, m = item['time'].split(':')
@@ -56,17 +61,22 @@ class PersonalReminder(Star):
                     id=f"{self.plugin_name}_{idx}",
                     replace_existing=True
                 )
-            except: pass
+            except Exception as e:
+                logging.error(f"注册任务失败: {e}")
 
     async def _send_private_notification(self, item):
+        """发送私聊提醒"""
         msg = f"🔔 【私人秘书提醒】\n--------------------\n内容：{item['content']}\n时间：{item['time']}\n--------------------\n别忘了去领取哦！"
         try:
             await self.context.send_private_message(item['user_id'], [Plain(msg)])
-        except: pass
+        except Exception as e:
+            logging.error(f"发送提醒失败: {e}")
 
+    # 修正后的启动装饰器
     @on_startup
     async def startup(self, event: AstrBotMessageEvent):
         self._refresh_scheduler()
+        logging.info("DNF私人提醒插件已成功加载。")
 
     @command("提醒")
     async def reminder_manager(self, event: AstrBotMessageEvent):
@@ -105,14 +115,16 @@ class PersonalReminder(Star):
             self._save_data()
             yield CommandResult().success(f"🗑 已删除：{removed['time']} {removed['content']}")
         else:
-            yield CommandResult().error("删除失败：编号无效。")
+            yield CommandResult().error("删除失败：编号无效或无权限。")
 
     @reminder_manager.group("立即测试")
     async def test(self, event: AstrBotMessageEvent):
-        '''立即触发我的提醒测试'''
+        '''立即触发我的所有提醒测试'''
         user_id = event.message_obj.user_id
         my_items = [r for r in self.reminders if r['user_id'] == user_id]
-        if not my_items: return
+        if not my_items:
+            yield CommandResult().error("你还没有设置任何任务。")
+            return
         yield CommandResult().success("测试消息已发出，请查看私聊。")
         for item in my_items:
             await self._send_private_notification(item)
