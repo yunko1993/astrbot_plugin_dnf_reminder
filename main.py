@@ -2,11 +2,10 @@ import logging
 import json
 import os
 import asyncio
-import traceback
 from datetime import datetime
 from astrbot.api.all import *
 
-@register("dnf_personal_reminder", "yunko1993", "DNF私人提醒秘书", "1.3.8")
+@register("dnf_personal_reminder", "yunko1993", "DNF私人提醒秘书", "1.4.0")
 class PersonalReminder(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -28,7 +27,7 @@ class PersonalReminder(Star):
                 with open(self.data_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except:
-                return[]
+                return []
         return[]
 
     def _save_data(self):
@@ -66,78 +65,38 @@ class PersonalReminder(Star):
                 )
             except: pass
 
-    # ================= 核心黑科技：全网搜捕发送器 =================
-    def _get_active_platforms(self):
-        """利用反射(Reflection)暴力扫描并获取底层适配器，无视 API 改名"""
-        pm = self.context.platform_manager
-        platforms =[]
-        
-        # 扫描 platform_manager 内部所有的列表和字典
-        for attr in dir(pm):
-            if attr.startswith('_'): continue
-            val = getattr(pm, attr)
-            
-            if isinstance(val, dict):
-                platforms.extend(val.values())
-            elif isinstance(val, list):
-                platforms.extend(val)
-                
-        # 筛选出真正具备“发送消息”能力的适配器对象
-        valid_platforms =[]
-        for p in platforms:
-            if hasattr(p, 'send_msg') or hasattr(p, 'send_private_msg') or hasattr(p, 'handle_out_msg'):
-                if p not in valid_platforms:
-                    valid_platforms.append(p)
-                    
-        return valid_platforms
-
+    # ================= 核心修复：遵循最新官方 API 发送主动消息 =================
     async def _send_private_notification(self, item):
-        user_id = str(item['user_id'])
         msg_text = f"🔔 【私人秘书提醒】\n--------------------\n内容：{item['content']}\n时间：{item['time']}\n--------------------\n👉 记得领取哦！"
         
-        logging.info(f"DNF提醒: 开始向用户 {user_id} 发送私聊消息...")
-        
-        platforms = self._get_active_platforms()
-        if not platforms:
-            logging.error("DNF提醒: 致命错误 - 找不到任何网络通信适配器！")
+        # 提取存储的统一消息来源符 (umo)
+        umo = item.get('umo')
+        if not umo:
+            logging.error("DNF提醒: 致命错误 - 任务缺少 unified_msg_origin！请删除旧任务并重新添加。")
             return
-
-        success = False
-        for platform in platforms:
-            # 策略1：通用 OutMsg 协议
-            if hasattr(platform, 'send_msg') or hasattr(platform, 'handle_out_msg'):
-                try:
-                    from astrbot.api.message_event import OutMsg, TargetType
-                    out_msg = OutMsg(type=TargetType.PRIVATE, target_id=user_id, chain=[Plain(msg_text)])
-                    
-                    if hasattr(platform, 'send_msg'):
-                        await platform.send_msg(out_msg)
-                    else:
-                        await platform.handle_out_msg(out_msg)
-                        
-                    logging.info(f"DNF提醒: 已通过 OutMsg 协议成功发送。")
-                    success = True
-                    break
-                except Exception as e:
-                    pass
-
-            # 策略2：OneBot 原生协议底层强发 (专治 NapCat)
-            if not success and hasattr(platform, 'send_private_msg'):
-                try:
-                    await platform.send_private_msg(user_id=int(user_id), message=[Plain(msg_text)])
-                    logging.info(f"DNF提醒: 已通过 OneBot 原生协议成功发送。")
-                    success = True
-                    break
-                except Exception as e:
-                    pass
-                    
-        if not success:
-            logging.error(f"DNF提醒: 所有适配器均发送失败。")
+            
+        logging.info(f"DNF提醒: 正在通过统一标识 [{umo}] 发送消息...")
+        
+        try:
+            # 官方推荐的发送语法
+            from astrbot.api.event import MessageChain
+            chain = MessageChain().message(msg_text)
+            await self.context.send_message(umo, chain)
+            logging.info("DNF提醒: 已成功发送主动消息。")
+        except Exception as e:
+            logging.error(f"DNF提醒: 标准方法发送失败: {e}")
+            try:
+                # 备用降级发送方案
+                await self.context.send_message(umo, [Plain(msg_text)])
+                logging.info("DNF提醒: 已通过备用 Component 列表发送成功。")
+            except Exception as e2:
+                logging.error(f"DNF提醒: 备用发送方案也失败: {e2}")
 
     # ================= 指令区 =================
     
     @command("提醒添加")
     async def add(self, event: AstrMessageEvent):
+        '''用法: /提醒添加 10:30 内容'''
         raw_msg = event.message_str.strip()
         parts = raw_msg.split()
         if len(parts) < 3:
@@ -152,14 +111,34 @@ class PersonalReminder(Star):
             yield event.plain_result("❌ 时间格式不对，请使用 24小时制 HH:MM")
             return
 
-        user_id = str(event.get_sender_id())
-        self.reminders.append({"user_id": user_id, "time": time_str, "content": content})
+        try:
+            user_id = str(event.get_sender_id())
+        except:
+            user_id = str(event.message_obj.sender.user_id)
+            
+        # --- 核心数据获取：存储当前会话的 UMO ---
+        try:
+            umo = event.unified_msg_origin
+        except:
+            yield event.plain_result("❌ 获取消息来源标识失败，当前环境可能不支持主动消息。")
+            return
+
+        self.reminders.append({
+            "user_id": user_id, 
+            "umo": umo,             # 保存了它，机器人就知道该往哪里发消息了
+            "time": time_str, 
+            "content": content
+        })
         self._save_data()
-        yield event.plain_result(f"✅ 设置成功！每天 {time_str} 我会私聊提醒你。")
+        yield event.plain_result(f"✅ 设置成功！每天 {time_str} 我会准时提醒你。")
 
     @command("提醒列表")
     async def list_reminders(self, event: AstrMessageEvent):
-        user_id = str(event.get_sender_id())
+        try:
+            user_id = str(event.get_sender_id())
+        except:
+            user_id = str(event.message_obj.sender.user_id)
+            
         my_items = [f"[{i}] {r['time']} - {r['content']}" for i, r in enumerate(self.reminders) if str(r['user_id']) == user_id]
         if not my_items:
             yield event.plain_result("你还没有设置任何提醒。")
@@ -175,25 +154,33 @@ class PersonalReminder(Star):
             return
         try:
             index = int(parts[1])
-            user_id = str(event.get_sender_id())
+            try:
+                user_id = str(event.get_sender_id())
+            except:
+                user_id = str(event.message_obj.sender.user_id)
+                
             if 0 <= index < len(self.reminders) and str(self.reminders[index]['user_id']) == user_id:
                 removed = self.reminders.pop(index)
                 self._save_data()
                 yield event.plain_result(f"🗑 已删除 {removed['time']} 的提醒。")
             else:
-                yield event.plain_result("❌ 编号无效。")
+                yield event.plain_result("❌ 编号无效或该任务不属于你。")
         except:
             yield event.plain_result("❌ 删除失败。")
 
     @command("提醒测试")
     async def test(self, event: AstrMessageEvent):
-        user_id = str(event.get_sender_id())
-        my_items =[r for r in self.reminders if str(r['user_id']) == user_id]
+        try:
+            user_id = str(event.get_sender_id())
+        except:
+            user_id = str(event.message_obj.sender.user_id)
+            
+        my_items = [r for r in self.reminders if str(r['user_id']) == user_id]
         if not my_items:
             yield event.plain_result("你没有设置任务，无法测试。")
             return
             
-        yield event.plain_result(f"🚀 正在发送测试消息...")
+        yield event.plain_result(f"🚀 正在发送 {len(my_items)} 条测试消息...")
         for item in my_items:
             await self._send_private_notification(item)
             await asyncio.sleep(0.5)
