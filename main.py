@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime
 from astrbot.api.all import *
 
-@register("dnf_personal_reminder", "yunko1993", "DNF私人提醒秘书", "1.3.6")
+@register("dnf_personal_reminder", "yunko1993", "DNF私人提醒秘书", "1.3.7")
 class PersonalReminder(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -70,7 +70,7 @@ class PersonalReminder(Star):
 
     async def _send_private_notification(self, item):
         """
-        核心修复：针对 v4.16.0 调整的主动消息发送逻辑
+        核心修复：针对 v4.16.0 修正属性名错误
         """
         user_id = str(item['user_id'])
         msg_text = f"🔔 【私人秘书提醒】\n--------------------\n内容：{item['content']}\n时间：{item['time']}\n--------------------\n👉 记得领取哦！"
@@ -78,32 +78,35 @@ class PersonalReminder(Star):
         logging.info(f"DNF提醒: 开始尝试向 {user_id} 发送主动消息...")
         
         try:
-            # 获取当前主平台 (NapCat / OneBot)
-            platform = self.context.get_platform_manager().get_main_platform()
+            # 1. 根据日志提示，使用属性名 platform_manager
+            pm = self.context.platform_manager
+            platform = pm.get_main_platform()
             
-            # 构造消息链
-            chain = [Plain(msg_text)]
+            # 2. 导入 v4 标准的消息目标类型
+            from astrbot.api.message_event import OutMsg, TargetType
             
-            # 在 v4.16.0 中，最稳妥的主动发送方式是调用适配器的底层发送
-            if hasattr(platform, 'send_private_msg'):
-                # OneBot 适配器通常有此方法
-                await platform.send_private_msg(user_id=int(user_id), message=chain)
+            # 3. 构造 OutMsg (v4.16.0 标准主动发送对象)
+            out_msg = OutMsg()
+            out_msg.type = TargetType.PRIVATE
+            out_msg.target_id = user_id
+            out_msg.chain = [Plain(msg_text)]
+            
+            # 4. 执行发送
+            # 在 v4 中，handle_out_msg 是平台处理发出的消息的标准接口
+            if hasattr(platform, 'handle_out_msg'):
+                await platform.handle_out_msg(out_msg)
             elif hasattr(platform, 'send_msg'):
-                # 通用发送方法
-                from astrbot.api.message_event import OutMsg, TargetType
-                out_msg = OutMsg(
-                    type=TargetType.PRIVATE,
-                    target_id=user_id,
-                    chain=chain
-                )
                 await platform.send_msg(out_msg)
+            elif hasattr(platform, 'send_private_msg'):
+                # 兼容 OneBot11 特有方法
+                await platform.send_private_msg(user_id=int(user_id), message=[Plain(msg_text)])
             else:
-                logging.error(f"DNF提醒: 未能在平台 {type(platform).__name__} 上找到合适的发送方法。")
+                logging.error(f"DNF提醒: 平台 {type(platform).__name__} 没有任何可用的发送方法。")
                 
-            logging.info(f"DNF提醒: 用户 {user_id} 的提醒已成功提交。")
+            logging.info(f"DNF提醒: 用户 {user_id} 的提醒发送指令已执行。")
             
         except Exception as e:
-            logging.error(f"DNF提醒: 向用户 {user_id} 发送消息时崩溃!")
+            logging.error(f"DNF提醒: 向用户 {user_id} 发送消息失败!")
             logging.error(traceback.format_exc())
 
     # ================= 指令区 =================
