@@ -6,6 +6,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from astrbot.api.all import *
 
 
@@ -48,6 +49,7 @@ class PersonalReminder(Star):
         self._scheduler_synced = False
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self._scheduler_retry_task: Optional[asyncio.Task] = None
+        self._fallback_scheduler: Optional[AsyncIOScheduler] = None
 
         self.data_dir = self._resolve_data_dir()
         os.makedirs(self.data_dir, exist_ok=True)
@@ -282,7 +284,31 @@ class PersonalReminder(Star):
                 logging.warning("DNF reminder: failed to get scheduler from context: %s", exc)
 
         runtime = getattr(self.context, "runtime", None)
-        return getattr(runtime, "scheduler", None)
+        runtime_scheduler = getattr(runtime, "scheduler", None)
+        if runtime_scheduler:
+            return runtime_scheduler
+
+        return self._get_or_create_fallback_scheduler()
+
+    def _get_or_create_fallback_scheduler(self):
+        if self._fallback_scheduler:
+            return self._fallback_scheduler
+
+        loop = self._main_loop or self._get_runtime_loop()
+        if not loop:
+            logging.warning("DNF reminder: fallback scheduler cannot start because event loop is unavailable")
+            return None
+
+        try:
+            scheduler = AsyncIOScheduler(event_loop=loop)
+            scheduler.start()
+            self._fallback_scheduler = scheduler
+            self._main_loop = loop
+            logging.warning("DNF reminder: using internal fallback scheduler")
+            return scheduler
+        except Exception as exc:
+            logging.error("DNF reminder: failed to start internal fallback scheduler: %s", exc)
+            return None
 
     def _ensure_scheduler_ready(self, force: bool = False):
         self._capture_loop()
