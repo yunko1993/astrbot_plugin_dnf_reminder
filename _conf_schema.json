@@ -1,0 +1,26 @@
+{
+  "send_private_copy": {
+    "description": "是否继续发送一份私聊提醒",
+    "type": "bool",
+    "hint": "默认开启。关闭后只往下面配置的群发送。",
+    "default": true
+  },
+  "send_to_configured_groups": {
+    "description": "是否发送到配置群",
+    "type": "bool",
+    "hint": "开启后，提醒会额外发送到 group_targets 中配置的群。",
+    "default": false
+  },
+  "group_targets": {
+    "description": "群目标列表",
+    "type": "string",
+    "hint": "每行一个目标。建议填写群会话 ID 或 unified_msg_origin；如果 AstrBot 提供 /sid，可先在目标群执行后复制过来。",
+    "default": ""
+  },
+  "mention_all_on_group": {
+    "description": "群消息时 @所有人",
+    "type": "bool",
+    "hint": "仅对配置群发送生效。是否真正成功取决于适配器和机器人权限。",
+    "default": false
+  }
+}
