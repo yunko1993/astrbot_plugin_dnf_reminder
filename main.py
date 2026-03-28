@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
@@ -13,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.5.0"
+PLUGIN_VERSION = "1.5.1"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -66,18 +67,36 @@ class PersonalReminder(Star):
 
     def _candidate_data_dirs(self) -> List[str]:
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dirs = []
+        base_dirs: List[str] = []
         cursor = current_dir
-        for _ in range(4):
+        for _ in range(8):
             base_dirs.append(cursor)
             parent = os.path.dirname(cursor)
             if parent == cursor:
                 break
             cursor = parent
 
+        # Prefer AstrBot global data dir (for example .../data/plugin_data/xxx)
+        # over plugin-local data dir (.../plugins/<plugin>/plugin_data/xxx).
+        preferred_roots: List[str] = []
+        seen_roots = set()
+        for base_dir in base_dirs:
+            base_name = os.path.basename(base_dir).lower()
+            if base_name == "plugins":
+                root = os.path.dirname(base_dir)
+                if root and root not in seen_roots:
+                    preferred_roots.append(root)
+                    seen_roots.add(root)
+            if base_name == "data":
+                if base_dir not in seen_roots:
+                    preferred_roots.append(base_dir)
+                    seen_roots.add(base_dir)
+
+        ordered_roots = preferred_roots + base_dirs
+
         candidates: List[str] = []
         seen = set()
-        for base_dir in base_dirs:
+        for base_dir in ordered_roots:
             for dir_name in [DEFAULT_DATA_DIR_NAME] + LEGACY_DATA_DIR_NAMES:
                 path = os.path.join(base_dir, "plugin_data", dir_name)
                 if path not in seen:
@@ -85,8 +104,44 @@ class PersonalReminder(Star):
                     seen.add(path)
         return candidates
 
+    def _preferred_data_dir(self, candidates: List[str]) -> Optional[str]:
+        for path in candidates:
+            marker = f"{os.sep}plugins{os.sep}"
+            if marker not in path:
+                return path
+        return candidates[0] if candidates else None
+
+    def _try_migrate_data_file(self, source_dir: str, target_dir: str):
+        if source_dir == target_dir:
+            return
+
+        source_file = os.path.join(source_dir, DATA_FILE_NAME)
+        target_file = os.path.join(target_dir, DATA_FILE_NAME)
+        if not os.path.exists(source_file) or os.path.exists(target_file):
+            return
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            shutil.copy2(source_file, target_file)
+            logging.warning(
+                "DNF reminder: migrated data file from %s to %s",
+                source_file,
+                target_file,
+            )
+        except Exception as exc:
+            logging.error("DNF reminder: failed to migrate data file: %s", exc)
+
     def _resolve_data_dir(self) -> str:
         candidates = self._candidate_data_dirs()
+        preferred = self._preferred_data_dir(candidates)
+        if not preferred:
+            raise RuntimeError("DNF reminder: no candidate data dir found")
+
+        preferred_file = os.path.join(preferred, DATA_FILE_NAME)
+        if os.path.exists(preferred_file):
+            logging.info("DNF reminder: use preferred data dir %s", preferred)
+            return preferred
+
         existing_files = []
         for path in candidates:
             file_path = os.path.join(path, DATA_FILE_NAME)
@@ -100,10 +155,14 @@ class PersonalReminder(Star):
         if existing_files:
             existing_files.sort(reverse=True)
             chosen = existing_files[0][1]
+            self._try_migrate_data_file(chosen, preferred)
+            if os.path.exists(preferred_file):
+                logging.info("DNF reminder: found existing data and switched to preferred dir %s", preferred)
+                return preferred
+
             logging.info("DNF reminder: found existing data dir %s", chosen)
             return chosen
 
-        preferred = candidates[0]
         logging.info("DNF reminder: no existing data file found, default to %s", preferred)
         return preferred
 
