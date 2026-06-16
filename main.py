@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.4"
+PLUGIN_VERSION = "1.6.5"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -238,7 +238,32 @@ class PersonalReminder(Star):
         return normalized
 
     def _build_active_reminders(self) -> List[Dict[str, str]]:
-        return self.file_reminders + self._load_config_reminders()
+        active_reminders = []
+        seen = set()
+        for item in self.file_reminders + self._load_config_reminders():
+            key = self._reminder_signature(item)
+            if key in seen:
+                logging.info("DNF reminder: skipped duplicated reminder %s", item)
+                continue
+            seen.add(key)
+            active_reminders.append(item)
+        return active_reminders
+
+    def _reminder_signature(self, item: Dict[str, str]):
+        target_text = "\n".join(
+            sorted(target["umo"] for target in self._get_notification_targets(item))
+        )
+        return (
+            str(item.get("time", "")).strip(),
+            str(item.get("content", "")).strip(),
+            str(item.get("mention_user_id", "")).strip(),
+            str(item.get("mention_all", "")).strip().lower(),
+            target_text,
+        )
+
+    def _get_active_reminders(self) -> List[Dict[str, str]]:
+        self.reminders = self._build_active_reminders()
+        return self.reminders
 
     def _load_config_reminders(self) -> List[Dict[str, str]]:
         raw_items = self._get_config_value(CONFIG_REMINDERS_KEY, [])
@@ -531,7 +556,7 @@ class PersonalReminder(Star):
             logging.error("DNF reminder: failed to clear old scheduler jobs: %s", exc)
 
         registered_count = 0
-        for idx, item in enumerate(self.reminders):
+        for idx, item in enumerate(self._get_active_reminders()):
             try:
                 hour_text, minute_text = item["time"].split(":")
                 scheduler.add_job(
@@ -554,11 +579,12 @@ class PersonalReminder(Star):
         )
 
     def _scheduled_job_entry(self, reminder_index: int):
-        if reminder_index < 0 or reminder_index >= len(self.reminders):
+        active_reminders = self._get_active_reminders()
+        if reminder_index < 0 or reminder_index >= len(active_reminders):
             logging.warning("DNF reminder: invalid reminder index %s", reminder_index)
             return
 
-        item = self.reminders[reminder_index]
+        item = active_reminders[reminder_index]
         loop = self._main_loop or self._get_runtime_loop()
         if not loop:
             logging.error("DNF reminder: no event loop available for scheduled job")
@@ -957,15 +983,14 @@ class PersonalReminder(Star):
     async def test(self, event: AstrMessageEvent):
         self._ensure_scheduler_ready(force=True)
 
-        user_id = self._get_user_id(event)
-        my_items = [item for item in self.file_reminders if str(item.get("user_id")) == user_id]
-        if not my_items:
+        active_reminders = self._get_active_reminders()
+        if not active_reminders:
             yield event.plain_result(MSG_TEST_EMPTY)
             return
 
-        yield event.plain_result(MSG_TEST_START.format(count=len(my_items)))
-        for item in my_items:
-            if not item.get("umo"):
+        yield event.plain_result(MSG_TEST_START.format(count=len(active_reminders)))
+        for item in active_reminders:
+            if not self._get_notification_targets(item):
                 await event.send(event.plain_result(MSG_RECREATE_REQUIRED))
                 continue
             await self._send_private_notification(item)
