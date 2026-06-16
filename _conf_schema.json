@@ -39,6 +39,12 @@
             "hint": "每项填写一个群会话 ID、unified_msg_origin 或纯群号。建议优先填写 /sid 得到的完整会话 ID。",
             "default": []
           },
+          "target_prefix": {
+            "description": "纯群号平台前缀",
+            "type": "string",
+            "hint": "当发送目标填写纯群号时使用。NapCat/aiocqhttp 通常填写 aiocqhttp；如果发送目标已是完整会话 ID，此项不会影响。",
+            "default": "aiocqhttp"
+          },
           "mention_mode": {
             "description": "@ 对象",
             "type": "string",
@@ -54,71 +60,6 @@
             "default": ""
           }
         }
-      }
-    }
-  },
-  "send_private_copy": {
-    "description": "发送私聊副本",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "send_to_configured_groups": {
-    "description": "发送到配置群",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
-  "group_targets": {
-    "description": "旧版群目标列表",
-    "type": "list",
-    "default": [],
-    "invisible": true
-  },
-  "mention_all_on_group": {
-    "description": "旧版群消息时 @所有人",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
-  "delivery_settings": {
-    "description": "旧版发送设置",
-    "type": "object",
-    "invisible": true,
-    "items": {
-      "send_private_copy": {
-        "description": "发送私聊副本",
-        "type": "bool",
-        "default": true
-      },
-      "send_to_configured_groups": {
-        "description": "发送到配置群",
-        "type": "bool",
-        "default": false
-      }
-    }
-  },
-  "group_settings": {
-    "description": "旧版群目标设置",
-    "type": "object",
-    "invisible": true,
-    "items": {
-      "group_targets": {
-        "description": "群目标列表",
-        "type": "list",
-        "default": []
-      }
-    }
-  },
-  "mention_settings": {
-    "description": "旧版 @ 提醒设置",
-    "type": "object",
-    "invisible": true,
-    "items": {
-      "mention_all_on_group": {
-        "description": "群消息时 @所有人",
-        "type": "bool",
-        "default": false
       }
     }
   }

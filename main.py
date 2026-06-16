@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.5"
+PLUGIN_VERSION = "1.6.6"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -27,14 +27,8 @@ LEGACY_DATA_DIR_NAMES = [
 ]
 DATA_FILE_NAME = "reminders.json"
 
-CONFIG_KEY_GROUPS = {
-    "send_private_copy": ("delivery_settings",),
-    "send_to_configured_groups": ("delivery_settings",),
-    "group_targets": ("group_settings",),
-    "mention_all_on_group": ("mention_settings",),
-}
-
 CONFIG_REMINDERS_KEY = "configured_reminders"
+DEFAULT_GROUP_SESSION_PREFIX = "aiocqhttp"
 
 MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 [@QQ\u53f7\u6216\u76f4\u63a5@\u6210\u5458] \u5185\u5bb9"
 MSG_INVALID_TIME = "\u65f6\u95f4\u683c\u5f0f\u4e0d\u5bf9\uff0c\u8bf7\u4f7f\u7528 24 \u5c0f\u65f6\u5236 HH:MM"
@@ -238,9 +232,11 @@ class PersonalReminder(Star):
         return normalized
 
     def _build_active_reminders(self) -> List[Dict[str, str]]:
+        config_reminders = self._load_config_reminders()
+        source_reminders = config_reminders if config_reminders else self.file_reminders
         active_reminders = []
         seen = set()
-        for item in self.file_reminders + self._load_config_reminders():
+        for item in source_reminders:
             key = self._reminder_signature(item)
             if key in seen:
                 logging.info("DNF reminder: skipped duplicated reminder %s", item)
@@ -304,6 +300,7 @@ class PersonalReminder(Star):
             mention_user_id = ""
 
         targets = self._normalize_targets(item.get("targets") or item.get("group_targets") or item.get("target_umo"))
+        target_prefix = str(item.get("target_prefix") or DEFAULT_GROUP_SESSION_PREFIX).strip()
         return {
             "user_id": "",
             "umo": "",
@@ -311,6 +308,7 @@ class PersonalReminder(Star):
             "mention_user_id": mention_user_id,
             "mention_all": "true" if mention_mode == "all" else "false",
             "configured_targets": "\n".join(targets),
+            "target_prefix": target_prefix,
             "title": title,
             "time": time_text,
             "content": content,
@@ -347,23 +345,6 @@ class PersonalReminder(Star):
 
     def _get_config_value(self, key: str, default):
         sentinel = object()
-        for group_key in CONFIG_KEY_GROUPS.get(key, ()):
-            try:
-                group_config = self.config.get(group_key, {})
-            except Exception:
-                group_config = {}
-
-            if not hasattr(group_config, "get"):
-                continue
-
-            try:
-                value = group_config.get(key, sentinel)
-            except Exception:
-                value = sentinel
-
-            if value is not sentinel and value is not None:
-                return value
-
         try:
             value = self.config.get(key, sentinel)
         except Exception:
@@ -398,6 +379,20 @@ class PersonalReminder(Star):
                 prefix = parts[0]
                 return [f"{prefix}:GroupMessage:{group_target}"]
 
+        return [group_target]
+
+    def _configured_group_session_prefix(self, item: Dict[str, str]) -> str:
+        prefix = str(item.get("target_prefix", "")).strip()
+        return prefix or DEFAULT_GROUP_SESSION_PREFIX
+
+    def _build_config_group_session_candidates(self, group_target: str, item: Dict[str, str]) -> List[str]:
+        group_target = str(group_target).strip()
+        if not group_target:
+            return []
+        if self._looks_like_session_string(group_target):
+            return [group_target]
+        if re.fullmatch(r"\d+", group_target):
+            return [f"{self._configured_group_session_prefix(item)}:GroupMessage:{group_target}"]
         return [group_target]
 
     def _send_to_groups_enabled(self) -> bool:
@@ -659,7 +654,10 @@ class PersonalReminder(Star):
                 logging.warning("DNF reminder: failed to create mention component: %s", exc)
                 parts.append(Plain(f"@{mention_user_id}\n"))
 
-        mention_all = self._mention_all_enabled() or self._item_mention_all_enabled(item)
+        if item.get("source") == "config":
+            mention_all = self._item_mention_all_enabled(item)
+        else:
+            mention_all = self._mention_all_enabled() or self._item_mention_all_enabled(item)
         if mention_all:
             try:
                 import astrbot.api.message_components as Comp
@@ -799,11 +797,16 @@ class PersonalReminder(Star):
 
         configured_targets = self._normalize_targets(item.get("configured_targets", ""))
         group_targets = configured_targets
-        if not group_targets and self._send_to_groups_enabled():
+        if not group_targets and item.get("source") != "config" and self._send_to_groups_enabled():
             group_targets = self._get_group_targets()
 
         for target in group_targets:
-            for session_candidate in self._build_group_session_candidates(target, item):
+            if configured_targets:
+                session_candidates = self._build_config_group_session_candidates(target, item)
+            else:
+                session_candidates = self._build_group_session_candidates(target, item)
+
+            for session_candidate in session_candidates:
                 if session_candidate in seen:
                     continue
                 seen.add(session_candidate)
