@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.3"
+PLUGIN_VERSION = "1.6.4"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -201,6 +201,7 @@ class PersonalReminder(Star):
             "user_id": str(user_id),
             "umo": "" if umo is None else str(umo),
             "group_id": str(item.get("group_id", "")),
+            "title": str(item.get("title", "")).strip(),
             "mention_user_id": str(
                 item.get("mention_user_id")
                 or item.get("at_user_id")
@@ -264,6 +265,7 @@ class PersonalReminder(Star):
         content = str(item.get("content") or item.get("message") or item.get("text") or "").strip()
         if not time_text or not content:
             return None
+        title = str(item.get("title") or "").strip() or content[:20]
 
         try:
             datetime.strptime(time_text, "%H:%M")
@@ -284,6 +286,7 @@ class PersonalReminder(Star):
             "mention_user_id": mention_user_id,
             "mention_all": "true" if mention_mode == "all" else "false",
             "configured_targets": "\n".join(targets),
+            "title": title,
             "time": time_text,
             "content": content,
             "source": "config",
@@ -755,7 +758,9 @@ class PersonalReminder(Star):
     def _format_reminder_item(self, index: int, item: Dict[str, str]) -> str:
         mention_user_id = str(item.get("mention_user_id", "")).strip()
         mention_text = f" [@{mention_user_id}]" if mention_user_id else ""
-        return f"[{index}] {item['time']} - {item['content']}{mention_text}"
+        title = str(item.get("title", "")).strip()
+        title_text = f"{title} - " if title else ""
+        return f"[{index}] {item['time']} - {title_text}{item['content']}{mention_text}"
 
     def _get_notification_targets(self, item: Dict[str, str]) -> List[Dict[str, str]]:
         targets: List[Dict[str, str]] = []
@@ -888,6 +893,7 @@ class PersonalReminder(Star):
                 "user_id": self._get_user_id(event),
                 "umo": umo,
                 "group_id": self._get_event_group_id(event),
+                "title": "",
                 "mention_user_id": mention_user_id,
                 "time": time_str,
                 "content": content,

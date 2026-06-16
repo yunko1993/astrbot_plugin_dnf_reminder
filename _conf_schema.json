@@ -3,17 +3,23 @@
     "description": "控制台提醒列表",
     "type": "template_list",
     "hint": "每条配置就是一个完整提醒，包含时间、内容、发送目标和 @ 对象。命令添加的提醒仍会保存在 reminders.json 中。",
-    "display_item": "content",
+    "display_item": "title",
     "templates": {
       "daily_reminder": {
         "name": "每日提醒",
         "hint": "每天在指定时间发送一次提醒。",
-        "display_item": "content",
+        "display_item": "title",
         "items": {
           "enabled": {
             "description": "启用这条提醒",
             "type": "bool",
             "default": true
+          },
+          "title": {
+            "description": "提醒标题",
+            "type": "string",
+            "hint": "只用于控制台列表里区分不同提醒，例如：心悦增幅器、每周团本、每日签到。",
+            "default": "每日提醒"
           },
           "time": {
             "description": "提醒时间",
