@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.2"
+PLUGIN_VERSION = "1.6.3"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -33,6 +33,8 @@ CONFIG_KEY_GROUPS = {
     "group_targets": ("group_settings",),
     "mention_all_on_group": ("mention_settings",),
 }
+
+CONFIG_REMINDERS_KEY = "configured_reminders"
 
 MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 [@QQ\u53f7\u6216\u76f4\u63a5@\u6210\u5458] \u5185\u5bb9"
 MSG_INVALID_TIME = "\u65f6\u95f4\u683c\u5f0f\u4e0d\u5bf9\uff0c\u8bf7\u4f7f\u7528 24 \u5c0f\u65f6\u5236 HH:MM"
@@ -64,7 +66,8 @@ class PersonalReminder(Star):
         os.makedirs(self.data_dir, exist_ok=True)
 
         self.data_file = os.path.join(self.data_dir, DATA_FILE_NAME)
-        self.reminders = self._load_data()
+        self.file_reminders = self._load_data()
+        self.reminders = self._build_active_reminders()
         self._capture_loop()
         self._ensure_scheduler_ready()
         self._schedule_scheduler_retry()
@@ -233,26 +236,89 @@ class PersonalReminder(Star):
 
         return normalized
 
+    def _build_active_reminders(self) -> List[Dict[str, str]]:
+        return self.file_reminders + self._load_config_reminders()
+
+    def _load_config_reminders(self) -> List[Dict[str, str]]:
+        raw_items = self._get_config_value(CONFIG_REMINDERS_KEY, [])
+        if not isinstance(raw_items, Sequence) or isinstance(raw_items, (bytes, str)):
+            return []
+
+        reminders = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            normalized_item = self._normalize_config_reminder(item)
+            if normalized_item:
+                reminders.append(normalized_item)
+        return reminders
+
+    def _normalize_config_reminder(self, item: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        enabled = item.get("enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.lower() not in ("false", "0", "no", "off")
+        if not enabled:
+            return None
+
+        time_text = str(item.get("time") or item.get("remind_time") or "").strip()
+        content = str(item.get("content") or item.get("message") or item.get("text") or "").strip()
+        if not time_text or not content:
+            return None
+
+        try:
+            datetime.strptime(time_text, "%H:%M")
+        except ValueError:
+            logging.warning("DNF reminder: invalid configured reminder time: %s", item)
+            return None
+
+        mention_mode = str(item.get("mention_mode") or "none").strip().lower()
+        mention_user_id = str(item.get("mention_user_id") or item.get("target_user_id") or "").strip()
+        if mention_mode != "user":
+            mention_user_id = ""
+
+        targets = self._normalize_targets(item.get("targets") or item.get("group_targets") or item.get("target_umo"))
+        return {
+            "user_id": "",
+            "umo": "",
+            "group_id": "",
+            "mention_user_id": mention_user_id,
+            "mention_all": "true" if mention_mode == "all" else "false",
+            "configured_targets": "\n".join(targets),
+            "time": time_text,
+            "content": content,
+            "source": "config",
+        }
+
+    def _normalize_targets(self, raw_targets) -> List[str]:
+        if raw_targets is None:
+            return []
+        if isinstance(raw_targets, str):
+            raw_targets = [line.strip() for line in raw_targets.splitlines()]
+        if not isinstance(raw_targets, Sequence) or isinstance(raw_targets, (bytes, str)):
+            return []
+
+        targets = []
+        seen = set()
+        for item in raw_targets:
+            text = str(item).strip()
+            if text and text not in seen:
+                targets.append(text)
+                seen.add(text)
+        return targets
+
     def _save_data(self):
         try:
             with open(self.data_file, "w", encoding="utf-8") as file:
-                json.dump(self.reminders, file, ensure_ascii=False, indent=2)
+                json.dump(self.file_reminders, file, ensure_ascii=False, indent=2)
         except Exception as exc:
             logging.error("DNF reminder: failed to save data to %s: %s", self.data_file, exc)
             return
 
+        self.reminders = self._build_active_reminders()
         self._ensure_scheduler_ready(force=True)
 
     def _get_config_value(self, key: str, default):
         sentinel = object()
-        try:
-            value = self.config.get(key, sentinel)
-        except Exception:
-            value = sentinel
-
-        if value is not sentinel and value is not None:
-            return value
-
         for group_key in CONFIG_KEY_GROUPS.get(key, ()):
             try:
                 group_config = self.config.get(group_key, {})
@@ -270,23 +336,18 @@ class PersonalReminder(Star):
             if value is not sentinel and value is not None:
                 return value
 
+        try:
+            value = self.config.get(key, sentinel)
+        except Exception:
+            value = sentinel
+
+        if value is not sentinel and value is not None:
+            return value
+
         return default
 
     def _get_group_targets(self) -> List[str]:
-        raw_targets = self._get_config_value("group_targets", [])
-        if isinstance(raw_targets, str):
-            raw_targets = [line.strip() for line in raw_targets.splitlines()]
-        if not isinstance(raw_targets, Sequence) or isinstance(raw_targets, (bytes, str)):
-            return []
-
-        targets = []
-        seen = set()
-        for item in raw_targets:
-            text = str(item).strip()
-            if text and text not in seen:
-                targets.append(text)
-                seen.add(text)
-        return targets
+        return self._normalize_targets(self._get_config_value("group_targets", []))
 
     def _looks_like_session_string(self, value: str) -> bool:
         return value.count(":") >= 2
@@ -316,6 +377,9 @@ class PersonalReminder(Star):
 
     def _mention_all_enabled(self) -> bool:
         return bool(self._get_config_value("mention_all_on_group", False))
+
+    def _item_mention_all_enabled(self, item: Dict[str, str]) -> bool:
+        return str(item.get("mention_all", "")).lower() == "true"
 
     def _send_private_copy_enabled(self) -> bool:
         return bool(self._get_config_value("send_private_copy", True))
@@ -524,7 +588,10 @@ class PersonalReminder(Star):
 
     def _build_message_text(self, item: Dict[str, str]) -> str:
         mention_user_id = str(item.get("mention_user_id", "")).strip()
-        mention_line = f"\u63d0\u9192\u5bf9\u8c61\uff1a@{mention_user_id}\n" if mention_user_id else ""
+        if self._item_mention_all_enabled(item):
+            mention_line = "\u63d0\u9192\u5bf9\u8c61\uff1a@\u5168\u4f53\u6210\u5458\n"
+        else:
+            mention_line = f"\u63d0\u9192\u5bf9\u8c61\uff1a@{mention_user_id}\n" if mention_user_id else ""
         msg_text = (
             "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\n"
             "--------------------\n"
@@ -563,7 +630,8 @@ class PersonalReminder(Star):
                 logging.warning("DNF reminder: failed to create mention component: %s", exc)
                 parts.append(Plain(f"@{mention_user_id}\n"))
 
-        if self._mention_all_enabled():
+        mention_all = self._mention_all_enabled() or self._item_mention_all_enabled(item)
+        if mention_all:
             try:
                 import astrbot.api.message_components as Comp
 
@@ -592,7 +660,7 @@ class PersonalReminder(Star):
                 chain.chain = parts
                 return chain
 
-        if self._mention_all_enabled():
+        if mention_all:
             try:
                 import astrbot.api.message_components as Comp
 
@@ -698,19 +766,23 @@ class PersonalReminder(Star):
             seen.add(private_umo)
             targets.append({"umo": private_umo, "kind": "private"})
 
-        if self._send_to_groups_enabled():
-            for target in self._get_group_targets():
-                for session_candidate in self._build_group_session_candidates(target, item):
-                    if session_candidate in seen:
-                        continue
-                    seen.add(session_candidate)
-                    targets.append(
-                        {
-                            "umo": session_candidate,
-                            "kind": "group",
-                            "raw_target": target,
-                        }
-                    )
+        configured_targets = self._normalize_targets(item.get("configured_targets", ""))
+        group_targets = configured_targets
+        if not group_targets and self._send_to_groups_enabled():
+            group_targets = self._get_group_targets()
+
+        for target in group_targets:
+            for session_candidate in self._build_group_session_candidates(target, item):
+                if session_candidate in seen:
+                    continue
+                seen.add(session_candidate)
+                targets.append(
+                    {
+                        "umo": session_candidate,
+                        "kind": "group",
+                        "raw_target": target,
+                    }
+                )
 
         return targets
 
@@ -811,7 +883,7 @@ class PersonalReminder(Star):
             yield event.plain_result(MSG_NO_ORIGIN)
             return
 
-        self.reminders.append(
+        self.file_reminders.append(
             {
                 "user_id": self._get_user_id(event),
                 "umo": umo,
@@ -837,7 +909,7 @@ class PersonalReminder(Star):
         user_id = self._get_user_id(event)
         my_items = [
             self._format_reminder_item(index, item)
-            for index, item in enumerate(self.reminders)
+            for index, item in enumerate(self.file_reminders)
             if str(item.get("user_id")) == user_id
         ]
         if not my_items:
@@ -863,15 +935,15 @@ class PersonalReminder(Star):
             return
 
         user_id = self._get_user_id(event)
-        if not (0 <= index < len(self.reminders)):
+        if not (0 <= index < len(self.file_reminders)):
             yield event.plain_result(MSG_DELETE_NOT_FOUND)
             return
 
-        if str(self.reminders[index].get("user_id")) != user_id:
+        if str(self.file_reminders[index].get("user_id")) != user_id:
             yield event.plain_result(MSG_DELETE_NOT_OWNER)
             return
 
-        removed = self.reminders.pop(index)
+        removed = self.file_reminders.pop(index)
         self._save_data()
         yield event.plain_result(MSG_DELETE_OK.format(time=removed["time"]))
 
@@ -880,7 +952,7 @@ class PersonalReminder(Star):
         self._ensure_scheduler_ready(force=True)
 
         user_id = self._get_user_id(event)
-        my_items = [item for item in self.reminders if str(item.get("user_id")) == user_id]
+        my_items = [item for item in self.file_reminders if str(item.get("user_id")) == user_id]
         if not my_items:
             yield event.plain_result(MSG_TEST_EMPTY)
             return
