@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.7"
+PLUGIN_VERSION = "1.6.8"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -197,6 +197,15 @@ class PersonalReminder(Star):
             "umo": "" if umo is None else str(umo),
             "group_id": str(item.get("group_id", "")),
             "title": str(item.get("title", "")).strip(),
+            "mention_user_ids": "\n".join(
+                self._normalize_targets(
+                    item.get("mention_user_ids")
+                    or item.get("mention_user_id")
+                    or item.get("at_user_id")
+                    or item.get("target_user_id")
+                    or ""
+                )
+            ),
             "mention_user_id": str(
                 item.get("mention_user_id")
                 or item.get("at_user_id")
@@ -253,7 +262,7 @@ class PersonalReminder(Star):
         return (
             str(item.get("time", "")).strip(),
             str(item.get("content", "")).strip(),
-            str(item.get("mention_user_id", "")).strip(),
+            "\n".join(self._get_mention_user_ids(item)),
             str(item.get("mention_all", "")).strip().lower(),
             target_text,
         )
@@ -296,9 +305,13 @@ class PersonalReminder(Star):
             return None
 
         mention_mode = str(item.get("mention_mode") or "none").strip().lower()
-        mention_user_id = str(item.get("mention_user_id") or item.get("target_user_id") or "").strip()
+        mention_user_ids = self._normalize_targets(
+            item.get("mention_user_ids")
+            or item.get("mention_user_id")
+            or item.get("target_user_id")
+        )
         if mention_mode != "user":
-            mention_user_id = ""
+            mention_user_ids = []
 
         targets = self._normalize_targets(item.get("targets") or item.get("group_targets") or item.get("target_umo"))
         target_prefix = str(item.get("target_prefix") or DEFAULT_GROUP_SESSION_PREFIX).strip()
@@ -306,7 +319,8 @@ class PersonalReminder(Star):
             "user_id": "",
             "umo": "",
             "group_id": "",
-            "mention_user_id": mention_user_id,
+            "mention_user_id": mention_user_ids[0] if mention_user_ids else "",
+            "mention_user_ids": "\n".join(mention_user_ids),
             "mention_all": "true" if mention_mode == "all" else "false",
             "configured_targets": "\n".join(targets),
             "target_prefix": target_prefix,
@@ -418,6 +432,13 @@ class PersonalReminder(Star):
 
     def _item_mention_all_enabled(self, item: Dict[str, str]) -> bool:
         return str(item.get("mention_all", "")).lower() == "true"
+
+    def _get_mention_user_ids(self, item: Dict[str, str]) -> List[str]:
+        mention_user_ids = self._normalize_targets(item.get("mention_user_ids", ""))
+        fallback_user_id = str(item.get("mention_user_id", "")).strip()
+        if fallback_user_id and fallback_user_id not in mention_user_ids:
+            mention_user_ids.append(fallback_user_id)
+        return mention_user_ids
 
     def _send_private_copy_enabled(self) -> bool:
         return bool(self._get_config_value("send_private_copy", True))
@@ -626,11 +647,17 @@ class PersonalReminder(Star):
         return str(group_id or "")
 
     def _build_message_text(self, item: Dict[str, str]) -> str:
-        mention_user_id = str(item.get("mention_user_id", "")).strip()
+        mention_user_ids = self._get_mention_user_ids(item)
         if self._item_mention_all_enabled(item):
             mention_line = "\u63d0\u9192\u5bf9\u8c61\uff1a@\u5168\u4f53\u6210\u5458\n"
         else:
-            mention_line = f"\u63d0\u9192\u5bf9\u8c61\uff1a@{mention_user_id}\n" if mention_user_id else ""
+            mention_line = (
+                "\u63d0\u9192\u5bf9\u8c61\uff1a"
+                + " ".join(f"@{user_id}" for user_id in mention_user_ids)
+                + "\n"
+                if mention_user_ids
+                else ""
+            )
         msg_text = (
             "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\n"
             "--------------------\n"
@@ -654,20 +681,21 @@ class PersonalReminder(Star):
         from astrbot.api.event import MessageChain
 
         parts = []
-        mention_user_id = str(item.get("mention_user_id", "")).strip()
-        if mention_user_id:
+        mention_user_ids = self._get_mention_user_ids(item)
+        if mention_user_ids:
             try:
                 import astrbot.api.message_components as Comp
 
                 at_cls = getattr(Comp, "At", None)
                 if at_cls:
-                    parts.append(at_cls(qq=mention_user_id))
+                    for mention_user_id in mention_user_ids:
+                        parts.append(at_cls(qq=mention_user_id))
                     parts.append(Comp.Plain(text="\n"))
                 else:
-                    parts.append(Plain(f"@{mention_user_id}\n"))
+                    parts.append(Plain(" ".join(f"@{user_id}" for user_id in mention_user_ids) + "\n"))
             except Exception as exc:
                 logging.warning("DNF reminder: failed to create mention component: %s", exc)
-                parts.append(Plain(f"@{mention_user_id}\n"))
+                parts.append(Plain(" ".join(f"@{user_id}" for user_id in mention_user_ids) + "\n"))
 
         if item.get("source") == "config":
             mention_all = self._item_mention_all_enabled(item)
@@ -795,8 +823,8 @@ class PersonalReminder(Star):
         return f"\uff0c\u5e76\u5728\u7fa4\u91cc @ {mention_user_id}" if mention_user_id else ""
 
     def _format_reminder_item(self, index: int, item: Dict[str, str]) -> str:
-        mention_user_id = str(item.get("mention_user_id", "")).strip()
-        mention_text = f" [@{mention_user_id}]" if mention_user_id else ""
+        mention_user_ids = self._get_mention_user_ids(item)
+        mention_text = " [" + " ".join(f"@{user_id}" for user_id in mention_user_ids) + "]" if mention_user_ids else ""
         title = str(item.get("title", "")).strip()
         title_text = f"{title} - " if title else ""
         return f"[{index}] {item['time']} - {title_text}{item['content']}{mention_text}"
@@ -940,6 +968,7 @@ class PersonalReminder(Star):
                 "group_id": self._get_event_group_id(event),
                 "title": "",
                 "mention_user_id": mention_user_id,
+                "mention_user_ids": mention_user_id,
                 "time": time_str,
                 "content": content,
             }

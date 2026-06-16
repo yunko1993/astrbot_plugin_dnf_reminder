@@ -6,8 +6,8 @@
     "display_item": "title",
     "templates": {
       "daily_reminder": {
-        "name": "每日提醒",
-        "hint": "每天在指定时间发送一次提醒。",
+        "name": "提醒条目",
+        "hint": "展开后可编辑标题、时间、内容、发送目标和 @ 对象。",
         "display_item": "title",
         "items": {
           "enabled": {
@@ -53,11 +53,17 @@
             "options": ["none", "user", "all"],
             "labels": ["不 @", "@ 指定人", "@ 所有人"]
           },
+          "mention_user_ids": {
+            "description": "指定人 QQ 号列表",
+            "type": "list",
+            "hint": "当 @ 对象选择“@ 指定人”时填写。每项一个 QQ 号，可添加多个。",
+            "default": []
+          },
           "mention_user_id": {
-            "description": "指定人 QQ 号",
+            "description": "旧版指定人 QQ 号",
             "type": "string",
-            "hint": "当 @ 对象选择“@ 指定人”时填写。",
-            "default": ""
+            "default": "",
+            "invisible": true
           }
         }
       }
