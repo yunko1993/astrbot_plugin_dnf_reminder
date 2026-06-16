@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.5.1"
+PLUGIN_VERSION = "1.6.0"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -27,10 +27,10 @@ LEGACY_DATA_DIR_NAMES = [
 ]
 DATA_FILE_NAME = "reminders.json"
 
-MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 \u5185\u5bb9"
+MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 [@QQ\u53f7] \u5185\u5bb9"
 MSG_INVALID_TIME = "\u65f6\u95f4\u683c\u5f0f\u4e0d\u5bf9\uff0c\u8bf7\u4f7f\u7528 24 \u5c0f\u65f6\u5236 HH:MM"
 MSG_NO_ORIGIN = "\u83b7\u53d6\u6d88\u606f\u6765\u6e90\u5931\u8d25\uff0c\u5f53\u524d\u73af\u5883\u53ef\u80fd\u4e0d\u652f\u6301\u4e3b\u52a8\u6d88\u606f\u3002"
-MSG_ADD_OK = "\u8bbe\u7f6e\u6210\u529f\uff1a\u6bcf\u5929 {time} \u63d0\u9192\u4f60 {content}"
+MSG_ADD_OK = "\u8bbe\u7f6e\u6210\u529f\uff1a\u6bcf\u5929 {time} \u63d0\u9192\u4f60 {content}{mention_suffix}"
 MSG_EMPTY_LIST = "\u4f60\u8fd8\u6ca1\u6709\u8bbe\u7f6e\u4efb\u4f55\u63d0\u9192\u3002"
 MSG_LIST_TITLE = "\u4f60\u7684\u63d0\u9192\u5217\u8868\uff1a\n"
 MSG_DELETE_USAGE = "\u7528\u6cd5\uff1a/\u63d0\u9192\u5220\u9664 [\u7f16\u53f7]"
@@ -191,6 +191,12 @@ class PersonalReminder(Star):
             "user_id": str(user_id),
             "umo": "" if umo is None else str(umo),
             "group_id": str(item.get("group_id", "")),
+            "mention_user_id": str(
+                item.get("mention_user_id")
+                or item.get("at_user_id")
+                or item.get("target_user_id")
+                or ""
+            ).strip(),
             "time": time_text,
             "content": str(content_value).strip(),
         }
@@ -488,11 +494,14 @@ class PersonalReminder(Star):
         return str(group_id or "")
 
     def _build_message_text(self, item: Dict[str, str]) -> str:
+        mention_user_id = str(item.get("mention_user_id", "")).strip()
+        mention_line = f"\u63d0\u9192\u5bf9\u8c61\uff1a@{mention_user_id}\n" if mention_user_id else ""
         msg_text = (
             "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\n"
             "--------------------\n"
             f"\u5185\u5bb9\uff1a{item['content']}\n"
             f"\u65f6\u95f4\uff1a{item['time']}\n"
+            f"{mention_line}"
             "--------------------\n"
             "\u8bb0\u5f97\u9886\u53d6\u3002"
         )
@@ -506,10 +515,25 @@ class PersonalReminder(Star):
     def _should_use_cq_at_all(self, target_umo: str) -> bool:
         return False
 
-    def _create_group_chain(self, msg_text: str, target_umo: str):
+    def _create_group_chain(self, msg_text: str, item: Dict[str, str], target_umo: str):
         from astrbot.api.event import MessageChain
 
         parts = []
+        mention_user_id = str(item.get("mention_user_id", "")).strip()
+        if mention_user_id:
+            try:
+                import astrbot.api.message_components as Comp
+
+                at_cls = getattr(Comp, "At", None)
+                if at_cls:
+                    parts.append(at_cls(qq=mention_user_id))
+                    parts.append(Comp.Plain(text="\n"))
+                else:
+                    parts.append(Plain(f"@{mention_user_id}\n"))
+            except Exception as exc:
+                logging.warning("DNF reminder: failed to create mention component: %s", exc)
+                parts.append(Plain(f"@{mention_user_id}\n"))
+
         if self._mention_all_enabled():
             try:
                 import astrbot.api.message_components as Comp
@@ -550,6 +574,22 @@ class PersonalReminder(Star):
         chain.chain = parts
         return chain
 
+    def _parse_mention_user_id(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text.startswith("@"):
+            return ""
+        user_id = text[1:].strip()
+        return user_id if re.fullmatch(r"\d+", user_id) else ""
+
+    def _format_mention_suffix(self, mention_user_id: str) -> str:
+        mention_user_id = str(mention_user_id or "").strip()
+        return f"\uff0c\u5e76\u5728\u7fa4\u91cc @ {mention_user_id}" if mention_user_id else ""
+
+    def _format_reminder_item(self, index: int, item: Dict[str, str]) -> str:
+        mention_user_id = str(item.get("mention_user_id", "")).strip()
+        mention_text = f" [@{mention_user_id}]" if mention_user_id else ""
+        return f"[{index}] {item['time']} - {item['content']}{mention_text}"
+
     def _get_notification_targets(self, item: Dict[str, str]) -> List[Dict[str, str]]:
         targets: List[Dict[str, str]] = []
         seen = set()
@@ -586,7 +626,7 @@ class PersonalReminder(Star):
         for target in targets:
             umo = target["umo"]
             chain_payload = (
-                self._create_group_chain(msg_text, umo)
+                self._create_group_chain(msg_text, item, umo)
                 if target["kind"] == "group"
                 else self._build_plain_message_chain(msg_text)
             )
@@ -647,7 +687,18 @@ class PersonalReminder(Star):
             return
 
         time_str = parts[1]
-        content = " ".join(parts[2:]).strip()
+        mention_user_id = ""
+        content_start_index = 2
+        if len(parts) >= 4:
+            mention_user_id = self._parse_mention_user_id(parts[2])
+            if mention_user_id:
+                content_start_index = 3
+
+        content = " ".join(parts[content_start_index:]).strip()
+        if not content:
+            yield event.plain_result(MSG_INVALID_FORMAT)
+            return
+
         try:
             datetime.strptime(time_str, "%H:%M")
         except ValueError:
@@ -664,12 +715,19 @@ class PersonalReminder(Star):
                 "user_id": self._get_user_id(event),
                 "umo": umo,
                 "group_id": self._get_event_group_id(event),
+                "mention_user_id": mention_user_id,
                 "time": time_str,
                 "content": content,
             }
         )
         self._save_data()
-        yield event.plain_result(MSG_ADD_OK.format(time=time_str, content=content))
+        yield event.plain_result(
+            MSG_ADD_OK.format(
+                time=time_str,
+                content=content,
+                mention_suffix=self._format_mention_suffix(mention_user_id),
+            )
+        )
 
     @command(CMD_LIST)
     async def list_reminders(self, event: AstrMessageEvent):
@@ -677,7 +735,7 @@ class PersonalReminder(Star):
 
         user_id = self._get_user_id(event)
         my_items = [
-            f"[{index}] {item['time']} - {item['content']}"
+            self._format_reminder_item(index, item)
             for index, item in enumerate(self.reminders)
             if str(item.get("user_id")) == user_id
         ]
