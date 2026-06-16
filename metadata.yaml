@@ -5,6 +5,6 @@ help: |
   /提醒列表 - 查看自己设置的提醒
   /提醒删除 [编号] - 删除指定提醒
   /提醒测试 - 立即测试发送自己的提醒
-version: 1.6.6
+version: 1.6.7
 author: qingcai
 repo: https://github.com/yunko1993/astrbot_plugin_dnf_reminder

@@ -42,8 +42,8 @@
           "target_prefix": {
             "description": "纯群号平台前缀",
             "type": "string",
-            "hint": "当发送目标填写纯群号时使用。NapCat/aiocqhttp 通常填写 aiocqhttp；如果发送目标已是完整会话 ID，此项不会影响。",
-            "default": "aiocqhttp"
+            "hint": "当发送目标填写纯群号时使用。你的日志里显示为 napcat_1(aiocqhttp)，通常应填写 napcat_1；也可填写 auto，让 /提醒测试 时自动从当前会话学习。",
+            "default": "napcat_1"
           },
           "mention_mode": {
             "description": "@ 对象",

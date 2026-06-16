@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.6"
+PLUGIN_VERSION = "1.6.7"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -28,7 +28,7 @@ LEGACY_DATA_DIR_NAMES = [
 DATA_FILE_NAME = "reminders.json"
 
 CONFIG_REMINDERS_KEY = "configured_reminders"
-DEFAULT_GROUP_SESSION_PREFIX = "aiocqhttp"
+DEFAULT_GROUP_SESSION_PREFIX = "napcat_1"
 
 MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 [@QQ\u53f7\u6216\u76f4\u63a5@\u6210\u5458] \u5185\u5bb9"
 MSG_INVALID_TIME = "\u65f6\u95f4\u683c\u5f0f\u4e0d\u5bf9\uff0c\u8bf7\u4f7f\u7528 24 \u5c0f\u65f6\u5236 HH:MM"
@@ -55,6 +55,7 @@ class PersonalReminder(Star):
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self._scheduler_retry_task: Optional[asyncio.Task] = None
         self._fallback_scheduler: Optional[AsyncIOScheduler] = None
+        self._runtime_group_session_prefix = ""
 
         self.data_dir = self._resolve_data_dir()
         os.makedirs(self.data_dir, exist_ok=True)
@@ -383,6 +384,8 @@ class PersonalReminder(Star):
 
     def _configured_group_session_prefix(self, item: Dict[str, str]) -> str:
         prefix = str(item.get("target_prefix", "")).strip()
+        if not prefix or prefix == "auto":
+            prefix = self._runtime_group_session_prefix
         return prefix or DEFAULT_GROUP_SESSION_PREFIX
 
     def _build_config_group_session_candidates(self, group_target: str, item: Dict[str, str]) -> List[str]:
@@ -394,6 +397,18 @@ class PersonalReminder(Star):
         if re.fullmatch(r"\d+", group_target):
             return [f"{self._configured_group_session_prefix(item)}:GroupMessage:{group_target}"]
         return [group_target]
+
+    def _extract_session_prefix(self, session: Optional[str]) -> str:
+        session_text = str(session or "").strip()
+        if not self._looks_like_session_string(session_text):
+            return ""
+        parts = session_text.split(":", 2)
+        return parts[0] if len(parts) == 3 else ""
+
+    def _capture_runtime_group_session_prefix(self, event: AstrMessageEvent):
+        prefix = self._extract_session_prefix(self._get_umo(event))
+        if prefix:
+            self._runtime_group_session_prefix = prefix
 
     def _send_to_groups_enabled(self) -> bool:
         return bool(self._get_config_value("send_to_configured_groups", False))
@@ -824,7 +839,7 @@ class PersonalReminder(Star):
         targets = self._get_notification_targets(item)
         if not targets:
             logging.error("DNF reminder: no valid notification targets configured. item=%s", item)
-            return
+            return 0
 
         msg_text = self._build_message_text(item)
         delivered = 0
@@ -859,6 +874,7 @@ class PersonalReminder(Star):
 
         if delivered <= 0:
             logging.error("DNF reminder: notification delivery failed for all targets. item=%s", item)
+        return delivered
 
     def _get_user_id(self, event: AstrMessageEvent) -> str:
         try:
@@ -984,6 +1000,7 @@ class PersonalReminder(Star):
 
     @command(CMD_TEST)
     async def test(self, event: AstrMessageEvent):
+        self._capture_runtime_group_session_prefix(event)
         self._ensure_scheduler_ready(force=True)
 
         active_reminders = self._get_active_reminders()
@@ -992,9 +1009,18 @@ class PersonalReminder(Star):
             return
 
         yield event.plain_result(MSG_TEST_START.format(count=len(active_reminders)))
+        success_count = 0
+        failed_count = 0
         for item in active_reminders:
             if not self._get_notification_targets(item):
                 await event.send(event.plain_result(MSG_RECREATE_REQUIRED))
+                failed_count += 1
                 continue
-            await self._send_private_notification(item)
+            delivered = await self._send_private_notification(item)
+            if delivered > 0:
+                success_count += 1
+            else:
+                failed_count += 1
             await asyncio.sleep(0.5)
+
+        yield event.plain_result(f"测试完成：成功 {success_count} 条，失败 {failed_count} 条。")
