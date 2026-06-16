@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.1"
+PLUGIN_VERSION = "1.6.2"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -26,6 +26,13 @@ LEGACY_DATA_DIR_NAMES = [
     "astrbot_plugin_dnf_reminder",
 ]
 DATA_FILE_NAME = "reminders.json"
+
+CONFIG_KEY_GROUPS = {
+    "send_private_copy": ("delivery_settings",),
+    "send_to_configured_groups": ("delivery_settings",),
+    "group_targets": ("group_settings",),
+    "mention_all_on_group": ("mention_settings",),
+}
 
 MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 [@QQ\u53f7\u6216\u76f4\u63a5@\u6210\u5458] \u5185\u5bb9"
 MSG_INVALID_TIME = "\u65f6\u95f4\u683c\u5f0f\u4e0d\u5bf9\uff0c\u8bf7\u4f7f\u7528 24 \u5c0f\u65f6\u5236 HH:MM"
@@ -237,11 +244,33 @@ class PersonalReminder(Star):
         self._ensure_scheduler_ready(force=True)
 
     def _get_config_value(self, key: str, default):
+        sentinel = object()
         try:
-            value = self.config.get(key, default)
+            value = self.config.get(key, sentinel)
         except Exception:
-            value = default
-        return default if value is None else value
+            value = sentinel
+
+        if value is not sentinel and value is not None:
+            return value
+
+        for group_key in CONFIG_KEY_GROUPS.get(key, ()):
+            try:
+                group_config = self.config.get(group_key, {})
+            except Exception:
+                group_config = {}
+
+            if not hasattr(group_config, "get"):
+                continue
+
+            try:
+                value = group_config.get(key, sentinel)
+            except Exception:
+                value = sentinel
+
+            if value is not sentinel and value is not None:
+                return value
+
+        return default
 
     def _get_group_targets(self) -> List[str]:
         raw_targets = self._get_config_value("group_targets", [])

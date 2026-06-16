@@ -7,7 +7,7 @@
 在 AstrBot 控制台执行：
 
 ```text
-/plugin install https://github.com/yunko1993/dnf_personal_reminder
+/plugin install https://github.com/yunko1993/astrbot_plugin_dnf_reminder
 ```
 
 或者手动把仓库放到插件目录中。
@@ -36,8 +36,13 @@
 - 新增提醒后会立即重新注册定时任务。
 - 定时触发时会把消息发送调度回主事件循环，避免线程里直接发消息失败。
 - 可以在插件配置里开启“发送到配置群”，并填写群目标列表，让提醒同步发到群里。
+- 配置页已按“发送设置 / 群目标设置 / @ 提醒设置”分组，方便在 AstrBot 控制台直接维护。
 - 添加提醒时既支持手写 `@QQ号`，也支持在群里直接 `@成员`，发送到群时会优先真正 `@` 这个人。
 - 开启“群消息时 @所有人”后，会优先尝试发送真正的 `@all` 组件；是否生效取决于 AstrBot 适配器和机器人权限。
+
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 
