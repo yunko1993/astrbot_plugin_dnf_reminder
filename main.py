@@ -14,7 +14,7 @@ from astrbot.api.all import *
 
 PLUGIN_ID = "dnf_personal_reminder"
 PLUGIN_TITLE = "\u0044\u004e\u0046 \u79c1\u4eba\u63d0\u9192\u79d8\u4e66"
-PLUGIN_VERSION = "1.6.0"
+PLUGIN_VERSION = "1.6.1"
 
 CMD_ADD = "\u63d0\u9192\u6dfb\u52a0"
 CMD_LIST = "\u63d0\u9192\u5217\u8868"
@@ -27,7 +27,7 @@ LEGACY_DATA_DIR_NAMES = [
 ]
 DATA_FILE_NAME = "reminders.json"
 
-MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 [@QQ\u53f7] \u5185\u5bb9"
+MSG_INVALID_FORMAT = "\u683c\u5f0f\u9519\u8bef\uff0c\u7528\u6cd5\uff1a/\u63d0\u9192\u6dfb\u52a0 10:30 [@QQ\u53f7\u6216\u76f4\u63a5@\u6210\u5458] \u5185\u5bb9"
 MSG_INVALID_TIME = "\u65f6\u95f4\u683c\u5f0f\u4e0d\u5bf9\uff0c\u8bf7\u4f7f\u7528 24 \u5c0f\u65f6\u5236 HH:MM"
 MSG_NO_ORIGIN = "\u83b7\u53d6\u6d88\u606f\u6765\u6e90\u5931\u8d25\uff0c\u5f53\u524d\u73af\u5883\u53ef\u80fd\u4e0d\u652f\u6301\u4e3b\u52a8\u6d88\u606f\u3002"
 MSG_ADD_OK = "\u8bbe\u7f6e\u6210\u529f\uff1a\u6bcf\u5929 {time} \u63d0\u9192\u4f60 {content}{mention_suffix}"
@@ -581,6 +581,76 @@ class PersonalReminder(Star):
         user_id = text[1:].strip()
         return user_id if re.fullmatch(r"\d+", user_id) else ""
 
+    def _iter_message_components(self, event: AstrMessageEvent):
+        message_obj = getattr(event, "message_obj", None)
+        if not message_obj:
+            return []
+
+        candidates = []
+        for attr in ("message", "messages", "chain", "message_chain"):
+            value = getattr(message_obj, attr, None)
+            if value:
+                candidates.append(value)
+
+        for candidate in candidates:
+            if isinstance(candidate, (list, tuple)):
+                return list(candidate)
+
+            chain = getattr(candidate, "chain", None)
+            if isinstance(chain, list):
+                return chain
+
+        return []
+
+    def _extract_mention_user_id_from_component(self, component: Any) -> str:
+        if component is None:
+            return ""
+
+        class_name = component.__class__.__name__.lower()
+        if "atall" in class_name:
+            return ""
+
+        if "at" not in class_name:
+            return ""
+
+        for attr in ("qq", "user_id", "target", "uid"):
+            value = getattr(component, attr, None)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if re.fullmatch(r"\d+", text):
+                return text
+
+        text = str(component)
+        match = re.search(r"(?:qq|user_id|target|uid)['=:\s]+(\d+)", text)
+        return match.group(1) if match else ""
+
+    def _extract_mention_user_id_from_event(self, event: AstrMessageEvent) -> str:
+        for component in self._iter_message_components(event):
+            mention_user_id = self._extract_mention_user_id_from_component(component)
+            if mention_user_id:
+                return mention_user_id
+
+        raw_text = str(getattr(event, "message_str", "") or "")
+        cq_match = re.search(r"\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]", raw_text)
+        if cq_match:
+            return cq_match.group(1)
+
+        return ""
+
+    def _strip_leading_mention_markup(self, content: str, mention_user_id: str) -> str:
+        cleaned = str(content or "").strip()
+        if not cleaned or not mention_user_id:
+            return cleaned
+
+        patterns = [
+            rf"^\[CQ:at,[^\]]*qq={re.escape(mention_user_id)}[^\]]*\]\s*",
+            rf"^@{re.escape(mention_user_id)}\s*",
+        ]
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, count=1).strip()
+        return cleaned
+
     def _format_mention_suffix(self, mention_user_id: str) -> str:
         mention_user_id = str(mention_user_id or "").strip()
         return f"\uff0c\u5e76\u5728\u7fa4\u91cc @ {mention_user_id}" if mention_user_id else ""
@@ -687,14 +757,16 @@ class PersonalReminder(Star):
             return
 
         time_str = parts[1]
-        mention_user_id = ""
+        mention_user_id = self._extract_mention_user_id_from_event(event)
         content_start_index = 2
         if len(parts) >= 4:
-            mention_user_id = self._parse_mention_user_id(parts[2])
-            if mention_user_id:
+            typed_mention_user_id = self._parse_mention_user_id(parts[2])
+            if typed_mention_user_id:
+                mention_user_id = typed_mention_user_id
                 content_start_index = 3
 
         content = " ".join(parts[content_start_index:]).strip()
+        content = self._strip_leading_mention_markup(content, mention_user_id)
         if not content:
             yield event.plain_result(MSG_INVALID_FORMAT)
             return
