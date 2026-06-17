@@ -563,19 +563,21 @@ class PersonalReminder(Star):
             self._schedule_scheduler_retry()
             return
 
-        if self._scheduler_synced and not force:
+        switched_from_fallback = (
+            self._fallback_scheduler is not None
+            and scheduler is not self._fallback_scheduler
+        )
+        if switched_from_fallback:
+            self._shutdown_fallback_scheduler()
+
+        if self._scheduler_synced and not force and not switched_from_fallback:
             return
 
         self._refresh_scheduler(scheduler)
         self._scheduler_synced = True
         self._scheduler_retry_task = None
 
-    def _refresh_scheduler(self, scheduler=None):
-        scheduler = scheduler or self._get_scheduler()
-        if not scheduler:
-            self._scheduler_synced = False
-            return
-
+    def _clear_plugin_jobs(self, scheduler) -> int:
         removed_count = 0
         try:
             for job in scheduler.get_jobs():
@@ -585,7 +587,31 @@ class PersonalReminder(Star):
                     removed_count += 1
         except Exception as exc:
             logging.error("DNF reminder: failed to clear old scheduler jobs: %s", exc)
+        return removed_count
 
+    def _shutdown_fallback_scheduler(self):
+        scheduler = self._fallback_scheduler
+        if not scheduler:
+            return
+
+        removed_count = self._clear_plugin_jobs(scheduler)
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception as exc:
+            logging.warning("DNF reminder: failed to shutdown fallback scheduler: %s", exc)
+        self._fallback_scheduler = None
+        logging.info(
+            "DNF reminder: stopped internal fallback scheduler, removed=%s",
+            removed_count,
+        )
+
+    def _refresh_scheduler(self, scheduler=None):
+        scheduler = scheduler or self._get_scheduler()
+        if not scheduler:
+            self._scheduler_synced = False
+            return
+
+        removed_count = self._clear_plugin_jobs(scheduler)
         registered_count = 0
         for idx, item in enumerate(self._get_active_reminders()):
             try:
